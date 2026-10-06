@@ -28,7 +28,7 @@ client = OpenAI(
     timeout=60.0
 )
 
-MODEL_NAME ="gemma-4-31b-it"
+MODEL_NAME = "novita/ling-3.1-flash"
 
 
 # =========================
