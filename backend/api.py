@@ -1,6 +1,10 @@
-
 from pydantic import BaseModel
-from agent import run_agent,identify_plant,stream_agent_response
+from agent import (
+    run_agent,
+    identify_plant,
+    stream_agent_response,
+    research_identified_plant
+)
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -29,6 +33,8 @@ def ask_agent(request: QuestionRequest):
     return {
         "answer": answer
     }
+
+
 @app.post("/ask-stream")
 async def ask_agent_stream(request: QuestionRequest):
 
@@ -36,6 +42,8 @@ async def ask_agent_stream(request: QuestionRequest):
         stream_agent_response(request.question),
         media_type="text/plain; charset=utf-8"
     )
+
+
 @app.post("/identify")
 async def identify_plant_endpoint(
     image: UploadFile = File(...)
@@ -47,4 +55,9 @@ async def identify_plant_endpoint(
 
     result = identify_plant("uploaded_plant.jpg")
 
-    return result
+    research_result = research_identified_plant(result)
+
+    return {
+        "identification": result,
+        "research": research_result
+    }
