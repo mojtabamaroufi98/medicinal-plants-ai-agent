@@ -24,11 +24,11 @@ plantNet_api_key = os.getenv("PLANTNET_API_KEY")
 
 client = OpenAI(
     api_key=api_key,
-    base_url="https://router.requesty.ai/v1",
+    base_url="https://1xai.ir/v1",
     timeout=60.0
 )
 
-MODEL_NAME = "novita/ling-3.1-flash"
+MODEL_NAME = "gpt-5.6-cyber"
 
 
 # =========================
