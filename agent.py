@@ -28,7 +28,7 @@ client = OpenAI(
     timeout=60.0
 )
 
-MODEL_NAME = "gpt-5.6-cyber"
+MODEL_NAME = "gemini-3.1-pro-preview"
 
 
 # =========================
