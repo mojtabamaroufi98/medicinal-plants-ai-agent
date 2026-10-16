@@ -493,7 +493,6 @@ tools = [
 # =========================
 
 def run_agent(user_question):
-
     messages = [
         {
             "role": "system",
@@ -506,29 +505,23 @@ def run_agent(user_question):
     ]
 
     for _ in range(3):
-
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
-            tools=tools
+            tools=tools,
+            tool_choice="auto"
         )
 
         message = response.choices[0].message
 
-        # =========================
-        # No tool call
-        # =========================
-
+        # اگر مدل مستقیماً پاسخ داده باشد
         if not message.tool_calls:
-
             return message.content
 
-        # =========================
-        # Tool calls
-        # =========================
-
+        # اضافه کردن پاسخ مدل به تاریخچه
         messages.append(message)
 
+        # اجرای Toolها
         for tool_call in message.tool_calls:
 
             if tool_call.function.name == "search_plant":
@@ -537,29 +530,20 @@ def run_agent(user_question):
                     tool_call.function.arguments
                 )
 
-                plant_name = arguments.get(
-                    "plant_name"
-                )
+                plant_name = arguments.get("plant_name")
 
-                search_result = search_plant(
-                    plant_name
-                )
+                result = search_plant(plant_name)
 
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(
-                            search_result,
-                            ensure_ascii=False
-                        )
-                    }
-                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(
+                        result,
+                        ensure_ascii=False
+                    )
+                })
 
-    return (
-        "نتوانستم در محدوده درخواست‌های "
-        "مجاز، گزارش پژوهشی را کامل کنم."
-    )
+    return "متأسفانه در حال حاضر نتوانستم پاسخ مناسبی برای سؤال شما آماده کنم."
 
 def stream_test(user_question):
 
@@ -680,3 +664,220 @@ def research_identified_plant(plant_result):
 """
 
     return run_agent(question)
+
+def build_plant_profile(plant_result):
+    best_match = plant_result.get("best_match")
+
+    if not best_match:
+        return None
+
+    question = f"""
+بر اساس نتیجه شناسایی زیر، یک پروفایل کامل و ساختاریافته برای گیاه تولید کن.
+
+نام علمی:
+{best_match}
+
+اطلاعات خام شناسایی:
+{json.dumps(plant_result, ensure_ascii=False)}
+
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
+
+ساختار دقیق JSON:
+
+{{
+    "id": "یک شناسه انگلیسی مناسب",
+    "nameFa": "نام فارسی گیاه",
+    "scientificName": "نام علمی",
+    "emoji": "🌿",
+    "imageUrl": null,
+    "shortDescription": "توضیح کوتاه",
+    "benefit": "مهم‌ترین کاربرد",
+    "categories": [],
+    "intro": "معرفی گیاه",
+    "compounds": [],
+    "commonUses": [],
+    "evidenceLevel": "سطح شواهد",
+    "evidenceNote": "توضیح درباره شواهد علمی",
+    "generalUsage": "نحوه مصرف عمومی",
+    "teaRecipe": "روش تهیه دمنوش",
+    "warnings": [],
+    "interactions": [],
+    "cautionGroups": []
+}}
+
+قوانین:
+- همیشه فارسی بنویس، به جز نام علمی.
+- تشخیص یا درمان قطعی ارائه نکن.
+- درباره بیماری‌ها ادعای درمان قطعی نداشته باش.
+- سطح شواهد علمی را واقع‌بینانه بیان کن.
+- هشدارها و تداخلات احتمالی را ذکر کن.
+- اگر اطلاعاتی را نمی‌دانی، حدس خطرناک نزن.
+- خروجی فقط JSON معتبر باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        temperature=0.2
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return None
+
+
+def search_disease(disease_query):
+    question = f"""
+درباره بیماری یا مشکل زیر یک پاسخ پژوهشی تهیه کن:
+
+{disease_query}
+
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
+
+ساختار دقیق:
+
+{{
+    "id": "شناسه انگلیسی",
+    "title": "نام بیماری یا مشکل",
+    "about": "توضیح کوتاه و علمی",
+    "relatedPlants": [
+        {{
+            "plantId": "شناسه انگلیسی گیاه",
+            "nameFa": "نام فارسی گیاه",
+            "scientificName": "نام علمی",
+            "emoji": "🌿",
+            "imageUrl": null,
+            "use": "کاربرد پژوهشی گیاه",
+            "evidenceLevel": "سطح شواهد"
+        }}
+    ],
+    "nutritionTips": [
+        "توصیه عمومی تغذیه‌ای"
+    ],
+    "cautions": [
+        "هشدار یا محدودیت"
+    ]
+}}
+
+قوانین:
+- همیشه فارسی پاسخ بده، به جز نام علمی.
+- ادعای درمان قطعی نکن.
+- تشخیص پزشکی ارائه نکن.
+- فقط کاربردهایی را مطرح کن که پشتوانه پژوهشی دارند.
+- سطح شواهد را واقع‌بینانه بیان کن.
+- اگر شواهد کافی وجود ندارد، آن را صریحاً اعلام کن.
+- در صورت وجود خطر یا تداخل احتمالی، هشدار بده.
+- خروجی فقط JSON معتبر باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        temperature=0.2
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {
+            "id": "unknown",
+            "title": disease_query,
+            "about": content,
+            "relatedPlants": [],
+            "nutritionTips": [],
+            "cautions": []
+        }
+
+
+def generate_diet_plan(request_data):
+    question = f"""
+برای کاربر زیر یک برنامه غذایی عمومی و غیرپزشکی تهیه کن:
+
+سن: {request_data.get("age")}
+جنسیت: {request_data.get("gender")}
+قد: {request_data.get("heightCm")} سانتی‌متر
+وزن: {request_data.get("weightKg")} کیلوگرم
+هدف: {request_data.get("goal")}
+سطح فعالیت: {request_data.get("activityLevel")}
+محدودیت غذایی: {request_data.get("restrictions")}
+حساسیت غذایی: {request_data.get("allergies")}
+
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
+
+ساختار دقیق:
+
+{{
+    "id": "شناسه برنامه",
+    "title": "عنوان برنامه",
+    "breakfast": ["صبحانه اول", "صبحانه دوم"],
+    "lunch": ["ناهار اول", "ناهار دوم"],
+    "dinner": ["شام اول", "شام دوم"],
+    "snacks": ["میان وعده"],
+    "drinks": ["نوشیدنی یا دمنوش مناسب"],
+    "relatedPlants": ["نام گیاهان مرتبط"],
+    "notes": ["توضیحات و هشدارهای عمومی"]
+}}
+
+قوانین:
+- برنامه عمومی باشد و تشخیص یا تجویز پزشکی نده.
+- ادعای درمان بیماری نکن.
+- اگر اطلاعات کاربر برای پیشنهاد خاص کافی نیست، پیشنهاد عمومی بده.
+- حساسیت‌ها و محدودیت‌های غذایی کاربر را رعایت کن.
+- درباره دمنوش‌ها و گیاهان دارویی احتیاط‌های لازم را در notes ذکر کن.
+- در صورت بیماری زمینه‌ای یا مصرف دارو، توصیه به مشورت با پزشک بده.
+- پاسخ فقط JSON معتبر باشد.
+- زبان پاسخ فارسی باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ],
+        temperature=0.2
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+
+    except json.JSONDecodeError:
+        return {
+            "id": f"plan_{int(__import__('time').time())}",
+            "title": f"برنامه پیشنهادی: {request_data.get('goal', 'تغذیه سالم')}",
+            "breakfast": [],
+            "lunch": [],
+            "dinner": [],
+            "snacks": [],
+            "drinks": [],
+            "relatedPlants": [],
+            "notes": [
+                "در حال حاضر تولید برنامه ساختاریافته با مشکل مواجه شد.",
+                content
+            ]
+        }
