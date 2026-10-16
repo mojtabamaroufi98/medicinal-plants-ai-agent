@@ -28,7 +28,7 @@ client = OpenAI(
     timeout=60.0
 )
 
-MODEL_NAME = "claude-opus-5-5"
+MODEL_NAME = "gemini-3.1-pro-preview"
 
 
 # =========================
