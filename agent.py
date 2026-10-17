@@ -24,11 +24,11 @@ plantNet_api_key = os.getenv("PLANTNET_API_KEY")
 
 client = OpenAI(
     api_key=api_key,
-    base_url="https://1xai.ir/v1",
+    base_url="https://api.sarovi.ir/v1",
     timeout=60.0
 )
 
-MODEL_NAME = "gemini-3.1-pro-preview"
+MODEL_NAME = "anthropic/claude-sonnet-5"
 
 
 # =========================
