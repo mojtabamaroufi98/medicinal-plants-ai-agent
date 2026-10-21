@@ -727,7 +727,7 @@ def build_plant_profile(plant_result):
                 "content": question
             }
         ],
-        temperature=0.2
+        
     )
 
     content = response.choices[0].message.content
