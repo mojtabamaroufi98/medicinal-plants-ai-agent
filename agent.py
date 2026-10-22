@@ -1,161 +1,897 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from backend.plant_data import PLANTS
+import json
+import mimetypes
+import os
+from PIL import Image
+import requests
+from dotenv import load_dotenv
+from openai import OpenAI
 
-from agent import (
-    run_agent,
-    identify_plant,
-    stream_agent_response,
-    build_plant_profile,
-    search_disease,
-    generate_diet_plan,
+
+# =========================
+# Environment
+# =========================
+
+
+load_dotenv()
+
+api_key = os.getenv("OPENROUTER_API_KEY")
+plantNet_api_key = os.getenv("PLANTNET_API_KEY")
+
+
+# =========================
+# AI Client
+# =========================
+
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://api.sarovi.ir/v1",
+    timeout=60.0
 )
 
-
-app = FastAPI(
-    title="Medicinal Plant AI Agent API",
-    version="1.0.0",
-)
+MODEL_NAME = "anthropic/claude-sonnet-5"
 
 
-# --------------------------------------------------
-# Models
-# --------------------------------------------------
+# =========================
+# System Prompt
+# =========================
 
-class QuestionRequest(BaseModel):
-    question: str
+system_prompt = """
+تو یک دستیار پژوهشی تخصصی در زمینه گیاهان دارویی، تغذیه عمومی و دمنوش‌های گیاهی هستی.
 
+وظیفه تو ارائه اطلاعات علمی، دقیق، قابل فهم و پژوهش‌محور درباره گیاهان دارویی، دمنوش‌ها و توصیه‌های عمومی تغذیه‌ای است.
 
-class ChatRequest(BaseModel):
-    message: str
-    history: list = []
+پاسخ‌ها باید تا حد امکان بر اساس شواهد علمی موجود باشند و از ارائه اطلاعات حدسی یا بدون پشتوانه خودداری کنی.
 
+━━━━━━━━━━━━━━━━━━━━
+🌿 بخش اول: گیاهان دارویی
+━━━━━━━━━━━━━━━━━━━━
 
-# --------------------------------------------------
-# General
-# --------------------------------------------------
+اگر کاربر درباره یک گیاه دارویی سؤال کرد:
 
-@app.get("/")
-def home():
+- نام رایج و نام علمی گیاه را در صورت امکان ذکر کن.
+- کاربردهای شناخته‌شده آن را توضیح بده.
+- برای هر کاربرد، میزان و کیفیت شواهد علمی را مشخص کن.
+- مطالعات و شواهد علمی مرتبط را به زبان ساده برای کاربر توضیح بده.
+- عوارض جانبی، تداخلات دارویی، محدودیت‌های مصرف و گروه‌های حساس را در صورت مرتبط بودن ذکر کن.
+- اگر درباره اثر یک گیاه شواهد کافی وجود ندارد، صریحاً بیان کن.
+
+هرگز ادعا نکن که یک گیاه به‌تنهایی یک بیماری را درمان می‌کند.
+
+━━━━━━━━━━━━━━━━━━━━
+🍵 بخش دوم: دمنوش‌ها و انتخاب بر اساس شرایط فرد
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر درباره دمنوش مناسب برای مزاج، هدف سلامتی یا شرایط جسمی خود سؤال کرد:
+
+1. ابتدا درخواست کاربر را مشخص کن. اگر کاربر مزاج گرم یا سرد خود را اعلام کرده است، آن را به‌عنوان اطلاعاتی که خودش بیان کرده در نظر بگیر و برای تشخیص مجدد مزاج تلاش نکن.
+
+2. اگر برای ارائه پیشنهاد ایمن اطلاعات کافی نداری، سؤال‌های کوتاه و مرتبط بپرس. اطلاعات مهم شامل بیماری‌های زمینه‌ای، داروهای مصرفی، حساسیت‌ها و در صورت ارتباط، بارداری یا شیردهی است. لازم نیست در هر پاسخ همه سؤال‌ها را تکرار کنی.
+
+3. اگر کاربر بیماری زمینه‌ای ندارد و عامل خطر مشخصی مطرح نشده است، می‌توانی گزینه‌های متناسب را معرفی کنی؛ اما بی‌خطر بودن دمنوش را برای همه تضمین نکن.
+
+4. اگر کاربر به دیابت، بیماری قلبی، مشکلات عروقی، بیماری کلیوی یا بیماری مهم دیگری اشاره کرد، فقط بر اساس نام بیماری دمنوش پیشنهاد نده. ایمنی گیاه، شواهد علمی، داروهای مصرفی و احتمال تداخل را بررسی کن. اگر ایمنی قابل‌تأیید نیست، از توصیه مصرف خودداری کن و مشورت با پزشک یا داروساز را پیشنهاد بده.
+
+5. اگر کاربر درباره مزاج گرم یا سرد سؤال کرد، می‌توانی مفهوم و توصیه‌های رایج در طب سنتی را توضیح بده؛ اما این دسته‌بندی را معیار پزشکی اثبات‌شده برای انتخاب دمنوش معرفی نکن. ایمنی و شواهد علمی را بر توصیه‌های صرفاً مزاجی مقدم بدان.
+
+6. برای هر دمنوش پیشنهادی، در حد نیاز این موارد را توضیح بده:
+- نام فارسی گیاه و نام علمی در صورت اطمینان
+- معرفی مختصر گیاه
+- کاربرد سنتی و شواهد علمی موجود، به‌صورت جداگانه
+- دلیل انتخاب آن برای درخواست کاربر
+- هشدارهای مهم، منع مصرف و تداخلات شناخته‌شده
+- میزان اطمینان به شواهد
+
+7. اگر کاربر درباره روش تهیه یا مقدار مصرف سؤال کرد، فقط در صورت وجود اطلاعات معتبر و متناسب با شرایط او پاسخ بده. از تعیین دوز درمانی یا پیشنهاد مصرف پرخطر خودداری کن.
+
+8. هیچ دمنوشی را درمان قطعی بیماری معرفی نکن. پیشنهادها نباید جایگزین دارو یا مراقبت پزشکی شوند. هرگز توصیه نکن که کاربر داروی تجویزی خود را بدون نظر پزشک قطع یا تغییر دهد.
+
+9. پاسخ را فارسی، کوتاه، کاربردی و متناسب با سؤال بنویس. اگر چند دمنوش معرفی می‌کنی، تعداد محدودی گزینه مرتبط ارائه بده و از فهرست‌های طولانی و غیرضروری خودداری کن.
+━━━━━━━━━━━━━━━━━━━━
+🍽️ بخش سوم: رژیم غذایی
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر درباره رژیم غذایی، برنامه غذایی، وعده‌های غذایی یا تغذیه بر اساس شرایط سلامتی سؤال کرد:
+
+ابتدا مشخص کن آیا اطلاعات کافی برای پاسخ وجود دارد یا خیر.
+
+اطلاعات مهم می‌تواند شامل موارد زیر باشد:
+
+- بیماری یا شرایط سلامتی کاربر
+- هدف غذایی، مانند کاهش وزن، افزایش وزن یا تغذیه متعادل
+- سن در صورت مرتبط بودن
+- جنسیت در صورت مرتبط بودن
+- میزان فعالیت بدنی
+- حساسیت یا آلرژی غذایی
+- داروهای مصرفی در صورت مرتبط بودن
+- محدودیت‌های غذایی
+- غذاهای مورد علاقه یا غذاهایی که کاربر نمی‌تواند مصرف کند
+
+اگر اطلاعات ضروری وجود ندارد، سؤال‌های کوتاه و ضروری بپرس و از حدس زدن اطلاعات مهم خودداری کن.
+
+اگر اطلاعات کافی وجود داشت:
+
+- یک برنامه غذایی عمومی و غیرتشخیصی پیشنهاد بده.
+- وعده‌های اصلی مانند صبحانه، ناهار و شام را در صورت مرتبط بودن پیشنهاد کن.
+- میان‌وعده‌ها را در صورت نیاز اضافه کن.
+- غذاهای مناسب‌تر و غذاهایی که بهتر است محدود شوند را توضیح بده.
+- توصیه‌ها را با شرایط سلامتی کاربر هماهنگ کن.
+- از ارائه رژیم‌های بسیار محدود، خطرناک یا افراطی خودداری کن.
+- اگر بیماری یا داروی کاربر نیاز به رژیم تخصصی دارد، تأکید کن که برنامه پیشنهادی جایگزین متخصص تغذیه یا پزشک نیست.
+
+━━━━━━━━━━━━━━━━━━━━
+🌡️ بخش چهارم: مزاج سرد و گرم
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر درباره «مزاج سرد و گرم»، «غذاهای سرد و گرم» یا رژیم غذایی بر اساس مزاج سؤال کرد:
+
+- مفهوم سردی و گرمی را به عنوان یک چارچوب مربوط به طب سنتی توضیح بده.
+- آن را با تشخیص پزشکی یا علمی یکسان در نظر نگیر.
+- ادعا نکن که مزاج سرد یا گرم یک تشخیص پزشکی قطعی است.
+- اگر کاربر بر اساس مزاج خود رژیم می‌خواهد، می‌توانی توصیه‌های غذایی عمومی را در چارچوب طب سنتی ارائه کنی، اما مشخص کن که این توصیه‌ها لزوماً از نظر پزشکی مدرن اثبات‌شده نیستند.
+- توصیه‌های مربوط به مزاج نباید باعث نادیده گرفتن بیماری، دارو یا توصیه پزشک شوند.
+- اگر بین توصیه‌های مبتنی بر مزاج و توصیه‌های پزشکی مدرن تعارض وجود داشت، ایمنی پزشکی را در اولویت قرار بده.
+
+━━━━━━━━━━━━━━━━━━━━
+🍽️🌿 بخش پنجم: ترکیب رژیم غذایی + دمنوش
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر هم‌زمان درباره بیماری، رژیم غذایی و دمنوش سؤال کرد:
+
+پاسخ را می‌توان به این شکل تنظیم کرد:
+
+🍽️ برنامه غذایی پیشنهادی
+- صبحانه: ...
+- میان‌وعده: ...
+- ناهار: ...
+- عصرانه: ...
+- شام: ...
+
+🌡️ ملاحظات مربوط به مزاج
+- ...
+
+🍵 دمنوش‌های پیشنهادی
+- نام دمنوش: ...
+- دلیل پیشنهاد: ...
+- میزان شواهد: ...
+- هشدار یا تداخل احتمالی: ...
+
+⚠️ نکات مهم
+- ...
+
+در صورتی که شواهد علمی کافی برای یک دمنوش یا ماده غذایی وجود ندارد، این موضوع را صریحاً اعلام کن.
+
+━━━━━━━━━━━━━━━━━━━━
+🏥 بخش ششم: بیماری‌ها و شرایط سلامتی
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر درباره یک بیماری یا مشکل سلامتی سؤال کرد:
+
+- تشخیص پزشکی انجام نده.
+- ادعا نکن که یک گیاه، دمنوش یا ماده غذایی بیماری را درمان می‌کند.
+- چند گزینه مرتبط را فقط بر اساس شواهد علمی معرفی کن.
+- برای هر گزینه توضیح بده که شواهد درباره آن چقدر قوی یا محدود هستند.
+- خطرات، منع مصرف و تداخلات مهم را ذکر کن.
+
+برای بیماری‌های جدی، شرایط اورژانسی، بارداری، کودکان، سالمندان یا مصرف هم‌زمان داروها، بر اهمیت مشورت با پزشک یا داروساز تأکید کن.
+
+━━━━━━━━━━━━━━━━━━━━
+🔬 قوانین علمی
+━━━━━━━━━━━━━━━━━━━━
+
+- هرگز ادعای درمان قطعی یا تضمینی نکن.
+- اطلاعات پژوهشی را با توصیه پزشکی شخصی اشتباه نگیر.
+- در صورت کمبود شواهد، صریحاً بگو که شواهد کافی وجود ندارد.
+- بین «شواهد علمی وجود دارد» و «اثربخشی قطعی ثابت شده است» تفاوت قائل شو.
+- اگر اطلاعات علمی درباره یک موضوع متناقض است، این موضوع را بیان کن.
+- اگر موضوع نیازمند اطلاعات علمی به‌روز است، از ابزار جست‌وجوی علمی موجود استفاده کن.
+- منابع علمی معتبر را نسبت به منابع غیرعلمی در اولویت قرار بده.
+
+━━━━━━━━━━━━━━━━━━━━
+⚠️ قوانین ایمنی
+━━━━━━━━━━━━━━━━━━━━
+
+- جایگزین پزشک یا متخصص تغذیه نباش.
+- داروهای تجویز‌شده را بدون نظر پزشک پیشنهاد به قطع یا تغییر نده.
+- برای بیماری‌های جدی، رژیم درمانی تخصصی ارائه نکن.
+- در صورت وجود علائم خطرناک یا شرایط اورژانسی، کاربر را به دریافت کمک پزشکی فوری راهنمایی کن.
+- اگر کاربر داروی خاصی مصرف می‌کند، قبل از پیشنهاد گیاه یا دمنوش احتمال تداخل را در نظر بگیر.
+- برای بارداری، شیردهی، کودکان و سالمندان احتیاط بیشتری داشته باش.
+
+━━━━━━━━━━━━━━━━━━━━
+✍️ قوانین نگارشی
+━━━━━━━━━━━━━━━━━━━━
+
+- همیشه به زبان فارسی پاسخ بده.
+- فارسی را روان، طبیعی و قابل فهم بنویس.
+- از ترجمه تحت‌اللفظی انگلیسی خودداری کن.
+- از علائم نگارشی فارسی به‌درستی استفاده کن.
+- در صورت امکان از نیم‌فاصله به شکل صحیح استفاده کن.
+- جمله‌ها را کوتاه و خوانا نگه دار.
+- از پاراگراف‌های بسیار طولانی خودداری کن.
+- برای دسته‌بندی اطلاعات از تیتر و فهرست استفاده کن.
+- پاسخ را بیش از حد طولانی نکن و فقط اطلاعات مرتبط با سؤال کاربر را ارائه بده.
+- اگر نام علمی، نام دارو، اصطلاح تخصصی یا نام مطالعه‌ای را ذکر می‌کنی، شکل اصلی آن را دقیق حفظ کن.
+
+━━━━━━━━━━━━━━━━━━━━
+📋 ساختار پاسخ
+━━━━━━━━━━━━━━━━━━━━
+
+ساختار پاسخ را متناسب با سؤال انتخاب کن.
+
+برای گیاه:
+
+🌿 نام گیاه
+نام علمی: ...
+
+معرفی
+...
+
+🔬 کاربردها و شواهد علمی
+- کاربرد: ...
+  میزان شواهد: ...
+
+⚠️ هشدارها و محدودیت‌ها
+- ...
+
+📚 مدارک علمی
+- ...
+
+برای رژیم غذایی:
+
+🍽️ برنامه غذایی پیشنهادی
+- صبحانه: ...
+- میان‌وعده: ...
+- ناهار: ...
+- عصرانه: ...
+- شام: ...
+
+🌡️ ملاحظات مزاجی
+...
+
+🍵 دمنوش‌های پیشنهادی
+...
+
+⚠️ نکات مهم
+...
+
+اگر سؤال کاربر به این ساختار نیاز ندارد، پاسخ را متناسب با سؤال تنظیم کن و از اضافه کردن بخش‌های غیرضروری خودداری کن.
+━━━━━━━━━━━━━━━━━━━━
+🥗 رژیم غذایی بر اساس مزاج اعلام‌شده توسط کاربر
+━━━━━━━━━━━━━━━━━━━━
+
+اگر کاربر مزاج خود را در پیام اعلام کرد و بر اساس آن رژیم غذایی خواست:
+
+- بدون نیاز به تشخیص مجدد مزاج، درخواست او را بر اساس همان اطلاعات بررسی کن.
+- پیشنهادهای غذایی رایج در طب سنتی مرتبط با مزاج اعلام‌شده را در صورت مرتبط بودن توضیح بده و مشخص کن که این دسته‌بندی‌ها لزوماً پشتوانه علمی قطعی ندارند.
+- یک الگوی غذایی عمومی و متعادل متناسب با هدف کاربر پیشنهاد بده.
+- در صورت نیاز، صبحانه، میان‌وعده، ناهار، عصرانه و شام را معرفی کن.
+- درباره خوراکی‌هایی که در طب سنتی گرم یا سرد محسوب می‌شوند، توضیح بده؛ اما بدون شواهد کافی، آن‌ها را برای بدن کاربر مفید یا مضر قطعی معرفی نکن.
+- اگر اطلاعات کافی برای شخصی‌سازی رژیم وجود ندارد، درباره هدف غذایی، بیماری‌های زمینه‌ای، حساسیت‌ها و محدودیت‌های ضروری سؤال کن.
+- اگر کاربر دیابت، بیماری قلبی، بیماری کلیوی یا شرایط پزشکی مهمی دارد، توصیه‌ها را با درنظرگرفتن آن شرایط ارائه بده و از رژیم درمانی تخصصی بدون اطلاعات کافی خودداری کن.
+- اگر کاربر هم رژیم غذایی و هم دمنوش خواست، هر دو را در یک پاسخ ارائه بده و ایمنی دمنوش را جداگانه بررسی کن.
+- رژیم را بر پایه تنوع غذایی، تعادل و محدودکردن قند، نمک و چربی‌های ناسالم تنظیم کن. مزاج اعلام‌شده نباید باعث نادیده گرفتن اصول تغذیه سالم شود.
+"""
+
+# =========================
+# PlantNet
+# =========================
+def identify_plant(image_path):
+
+    url = "https://my-api.plantnet.org/v2/identify/all"
+
+    params = {
+        "api-key": plantNet_api_key,
+        "lang": "en",
+        "nb-results": 3
+    }
+
+    converted_path = "plantnet_image.jpg"
+
+    try:
+
+        # =========================
+        # Convert Image to JPEG
+        # =========================
+
+        image = Image.open(image_path)
+
+        # اگر تصویر شفافیت داشته باشد،
+        # آن را به RGB تبدیل می‌کنیم
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        image.save(
+            converted_path,
+            format="JPEG",
+            quality=95
+        )
+
+        image.close()
+
+        # =========================
+        # Send Image to PlantNet
+        # =========================
+
+        with open(
+            converted_path,
+            "rb"
+        ) as image_file:
+
+            files = [
+                (
+                    "images",
+                    (
+                        "plant.jpg",
+                        image_file,
+                        "image/jpeg"
+                    )
+                )
+            ]
+
+            data = {
+                "organs": "auto"
+            }
+
+            response = requests.post(
+                url,
+                params=params,
+                files=files,
+                data=data,
+                timeout=30
+            )
+
+        # =========================
+        # Check Response
+        # =========================
+
+        if response.status_code != 200:
+
+            return {
+                "error": (
+                    f"PlantNet Error "
+                    f"{response.status_code}\n"
+                    f"{response.text}"
+                )
+            }
+
+        result = response.json()
+
+    except FileNotFoundError:
+
+        return {
+            "error": "فایل تصویر پیدا نشد."
+        }
+
+    except Exception as error:
+
+        return {
+            "error": (
+                f"خطا در پردازش تصویر:\n"
+                f"{error}"
+            )
+        }
+
+    # =========================
+    # Extract Results
+    # =========================
+
+    plants = []
+
+    for item in result.get(
+        "results",
+        []
+    ):
+
+        species = item.get(
+            "species",
+            {}
+        )
+
+        plants.append({
+            "scientific_name": species.get(
+                "scientificNameWithoutAuthor"
+            ),
+
+            "common_names": species.get(
+                "commonNames",
+                []
+            ),
+
+            "confidence": item.get(
+                "score"
+            )
+        })
+
     return {
-        "message": "Medicinal Plant AI Agent API is running"
+        "best_match": result.get(
+            "bestMatch"
+        ),
+
+        "plants": plants
     }
 
 
-# --------------------------------------------------
-# Chat
-# --------------------------------------------------
 
-@app.post("/ask")
-def ask_agent(request: QuestionRequest):
-    answer = run_agent(request.question)
+# =========================
+# Scientific Search
+# =========================
+
+def search_plant(plant_name):
+
+    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+
+    params = {
+        "query": f'"{plant_name}" AND (medicinal OR herbal OR phytotherapy)',
+        "format": "json",
+        "resultType": "core",
+        "pageSize": 3
+    }
+
+    try:
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+    except requests.RequestException as error:
+
+        return {
+            "error": f"خطا در اتصال به منبع علمی: {error}"
+        }
+
+    articles = []
+
+    for article in data["resultList"]["result"]:
+
+        articles.append({
+            "title": article.get("title"),
+            "abstract": article.get("abstractText"),
+            "year": article.get("pubYear"),
+            "journal": article.get("journalTitle"),
+            "doi": article.get("doi")
+        })
 
     return {
-        "answer": answer
+        "plant_name": plant_name,
+        "articles": articles
     }
 
 
-@app.post("/api/chat")
-def chat_agent(request: ChatRequest):
-    answer = run_agent(request.message)
+# =========================
+# Agent Tools
+# =========================
 
-    return {
-        "reply": answer,
-        "structured": None
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_plant",
+            "description": "برای دریافت اطلاعات پژوهشی درباره یک گیاه دارویی استفاده می‌شود.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plant_name": {
+                        "type": "string",
+                        "description": "نام علمی یا نام گیاه دارویی"
+                    }
+                },
+                "required": ["plant_name"]
+            }
+        }
     }
+]
 
 
-@app.post("/ask-stream")
-async def ask_agent_stream(request: QuestionRequest):
-    return StreamingResponse(
-        stream_agent_response(request.question),
-        media_type="text/plain; charset=utf-8"
+# =========================
+# Agent
+# =========================
+
+def run_agent(user_question):
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": user_question
+        }
+    ]
+
+    for _ in range(3):
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto"
+        )
+
+        message = response.choices[0].message
+
+        # اگر مدل مستقیماً پاسخ داده باشد
+        if not message.tool_calls:
+            return message.content
+
+        # اضافه کردن پاسخ مدل به تاریخچه
+        messages.append(message)
+
+        # اجرای Toolها
+        for tool_call in message.tool_calls:
+
+            if tool_call.function.name == "search_plant":
+
+                arguments = json.loads(
+                    tool_call.function.arguments
+                )
+
+                plant_name = arguments.get("plant_name")
+
+                result = search_plant(plant_name)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(
+                        result,
+                        ensure_ascii=False
+                    )
+                })
+
+    return "متأسفانه در حال حاضر نتوانستم پاسخ مناسبی برای سؤال شما آماده کنم."
+
+def stream_test(user_question):
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": user_question
+        }
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        stream=True
     )
 
+    for chunk in response:
 
-# --------------------------------------------------
-# Plant Identification
-# --------------------------------------------------
+        if not chunk.choices:
+            continue
 
-@app.post("/api/identify")
-async def identify_plant_endpoint(
-    image: UploadFile = File(...)
-):
-    contents = await image.read()
+        content = chunk.choices[0].delta.content
 
-    file_path = "uploaded_plant.jpg"
+        if content:
+            print(content, end="", flush=True)
+def stream_agent_response(user_question):
 
-    with open(file_path, "wb") as file:
-        file.write(contents)
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": user_question
+        }
+    ]
 
-    identification = identify_plant(file_path)
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        stream=True
+    )
 
-    plant = build_plant_profile(identification)
+    for chunk in response:
 
-    if plant is None:
-        raise HTTPException(
-            status_code=502,
-            detail="متأسفانه اطلاعات کافی برای ساخت پروفایل گیاه دریافت نشد."
+        if not chunk.choices:
+            continue
+
+        content = chunk.choices[0].delta.content
+
+        if content:
+            yield content
+
+
+
+
+
+def research_identified_plant(plant_result):
+    if "error" in plant_result:
+        return plant_result["error"]
+
+    best_match = plant_result.get("best_match")
+
+    if not best_match:
+        return "گیاه با اطمینان کافی شناسایی نشد."
+
+    # دریافت اطلاعات گیاه شناسایی‌شده
+    if isinstance(best_match, dict):
+        plant_name = (
+            best_match.get("scientificName")
+            or best_match.get("species")
+            or best_match.get("name")
+            or "نام علمی مشخص نیست"
         )
+    else:
+        plant_name = str(best_match)
 
-    plants = identification.get("plants", [])
+    question = f"""
+تو یک دستیار فارسی برای معرفی گیاهان هستی.
 
-    confidence = 0.0
+گیاه شناسایی‌شده:
+{plant_name}
 
-    if plants:
-        confidence = plants[0].get(
-            "confidence",
-            0.0
-        )
+فقط اطلاعات مربوط به همین گیاه را ارائه بده.
+پاسخ باید کوتاه، کاربردی و مناسب صفحه موبایل باشد.
 
-    return {
-        "plant": plant,
-        "confidence": confidence
-    }
-@app.get("/api/plants")
-def get_plants():
-    return PLANTS
+دقیقاً از این ساختار استفاده کن:
+
+نام فارسی گیاه:
+نام رایج و معتبر فارسی را بنویس. اگر مطمئن نیستی، اعلام کن که نام فارسی با اطمینان مشخص نشد.
+
+کاربرد در دمنوش و رژیم غذایی:
+در یک یا دو جمله توضیح بده آیا این گیاه معمولاً در دمنوش یا غذا استفاده می‌شود و کاربردهای رایج آن چیست.
+از ادعای درمان بیماری خودداری کن.
+
+مزاج گیاه:
+اگر اطلاعات قابل اتکایی از طب سنتی در دسترس است، مزاج گزارش‌شده را بیان کن.
+اگر اطلاعات کافی وجود ندارد، بنویس: مزاج با اطمینان مشخص نشد.
+مشخص کن که این دسته‌بندی مربوط به طب سنتی است و اثبات علمی قطعی محسوب نمی‌شود.
+
+چه افرادی باید احتیاط کنند یا مصرف نکنند؟
+فقط هشدارهای مهم و قابل اتکا درباره حساسیت، بارداری، شیردهی،
+بیماری‌های خاص یا تداخل دارویی را بیان کن.
+اگر اطلاعات کافی درباره ایمنی گیاه وجود ندارد، صریحاً بگو.
+هشدار پزشکی بدون پشتوانه نساز.
+
+قوانین:
+- فقط همین چهار بخش را نمایش بده.
+- مقدمه، نتیجه‌گیری، فهرست مقاله‌ها و گزارش علمی طولانی ننویس.
+- نام فارسی یا مزاج گیاه را حدس نزن.
+- اگر اطلاعات کافی نداری، صادقانه اعلام کن.
+- هیچ خاصیت درمانی اثبات‌نشده‌ای را قطعی معرفی نکن.
+"""
+
+    return run_agent(question)
+
+def build_plant_profile(plant_result):
+    best_match = plant_result.get("best_match")
+
+    if not best_match:
+        return None
+
+    question = f"""
+بر اساس نتیجه شناسایی زیر، یک پروفایل کامل و ساختاریافته برای گیاه تولید کن.
+
+نام علمی:
+{best_match}
+
+اطلاعات خام شناسایی:
+{json.dumps(plant_result, ensure_ascii=False)}
+
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
+
+ساختار دقیق JSON:
+
+{{
+    "id": "یک شناسه انگلیسی مناسب",
+    "nameFa": "نام فارسی گیاه",
+    "scientificName": "نام علمی",
+    "emoji": "🌿",
+    "imageUrl": null,
+    "shortDescription": "توضیح کوتاه",
+    "benefit": "مهم‌ترین کاربرد",
+    "categories": [],
+    "intro": "معرفی گیاه",
+    "compounds": [],
+    "commonUses": [],
+    "evidenceLevel": "سطح شواهد",
+    "evidenceNote": "توضیح درباره شواهد علمی",
+    "generalUsage": "نحوه مصرف عمومی",
+    "teaRecipe": "روش تهیه دمنوش",
+    "warnings": [],
+    "interactions": [],
+    "cautionGroups": []
+}}
+
+قوانین:
+- همیشه فارسی بنویس، به جز نام علمی.
+- تشخیص یا درمان قطعی ارائه نکن.
+- درباره بیماری‌ها ادعای درمان قطعی نداشته باش.
+- سطح شواهد علمی را واقع‌بینانه بیان کن.
+- هشدارها و تداخلات احتمالی را ذکر کن.
+- اگر اطلاعاتی را نمی‌دانی، حدس خطرناک نزن.
+- خروجی فقط JSON معتبر باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+
+    except json.JSONDecodeError:
+
+        try:
+            start = content.find("{")
+            end = content.rfind("}")
+
+            if start != -1 and end != -1:
+                return json.loads(
+                    content[start:end + 1]
+                )
+
+        except json.JSONDecodeError:
+            pass
+
+        return None
 
 
-@app.get("/api/plants/{plant_id}")
-def get_plant(plant_id: str):
-    for plant in PLANTS:
-        if plant["id"] == plant_id:
-            return plant
+def search_disease(disease_query):
+    question = f"""
+درباره بیماری یا مشکل زیر یک پاسخ پژوهشی تهیه کن:
 
-    return {
-        "error": "گیاه موردنظر پیدا نشد."
-    }
+{disease_query}
 
-@app.get("/api/diseases/search")
-def disease_search(q: str):
-    query = q.strip()
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
 
-    if not query:
+ساختار دقیق:
+
+{{
+    "id": "شناسه انگلیسی",
+    "title": "نام بیماری یا مشکل",
+    "about": "توضیح کوتاه و علمی",
+    "relatedPlants": [
+        {{
+            "plantId": "شناسه انگلیسی گیاه",
+            "nameFa": "نام فارسی گیاه",
+            "scientificName": "نام علمی",
+            "emoji": "🌿",
+            "imageUrl": null,
+            "use": "کاربرد پژوهشی گیاه",
+            "evidenceLevel": "سطح شواهد"
+        }}
+    ],
+    "nutritionTips": [
+        "توصیه عمومی تغذیه‌ای"
+    ],
+    "cautions": [
+        "هشدار یا محدودیت"
+    ]
+}}
+
+قوانین:
+- همیشه فارسی پاسخ بده، به جز نام علمی.
+- ادعای درمان قطعی نکن.
+- تشخیص پزشکی ارائه نکن.
+- فقط کاربردهایی را مطرح کن که پشتوانه پژوهشی دارند.
+- سطح شواهد را واقع‌بینانه بیان کن.
+- اگر شواهد کافی وجود ندارد، آن را صریحاً اعلام کن.
+- در صورت وجود خطر یا تداخل احتمالی، هشدار بده.
+- خروجی فقط JSON معتبر باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        temperature=0.2
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
         return {
-            "id": "empty",
-            "title": "",
-            "about": "لطفاً نام بیماری یا مشکل موردنظر را وارد کنید.",
+            "id": "unknown",
+            "title": disease_query,
+            "about": content,
             "relatedPlants": [],
             "nutritionTips": [],
             "cautions": []
         }
 
-    return search_disease(query)
 
+def generate_diet_plan(request_data):
+    question = f"""
+برای کاربر زیر یک برنامه غذایی عمومی و غیرپزشکی تهیه کن:
 
-class DietRequest(BaseModel):
-    age: int | None = None
-    gender: str | None = None
-    heightCm: int | None = None
-    weightKg: int | None = None
-    goal: str
-    activityLevel: str
-    restrictions: str | None = None
-    allergies: str | None = None
+سن: {request_data.get("age")}
+جنسیت: {request_data.get("gender")}
+قد: {request_data.get("heightCm")} سانتی‌متر
+وزن: {request_data.get("weightKg")} کیلوگرم
+هدف: {request_data.get("goal")}
+سطح فعالیت: {request_data.get("activityLevel")}
+محدودیت غذایی: {request_data.get("restrictions")}
+حساسیت غذایی: {request_data.get("allergies")}
 
+پاسخ را فقط به صورت JSON معتبر و بدون Markdown برگردان.
 
-@app.post("/api/diet")
-def diet(request: DietRequest):
-    return generate_diet_plan(request.model_dump())
+ساختار دقیق:
+
+{{
+    "id": "شناسه برنامه",
+    "title": "عنوان برنامه",
+    "breakfast": ["صبحانه اول", "صبحانه دوم"],
+    "lunch": ["ناهار اول", "ناهار دوم"],
+    "dinner": ["شام اول", "شام دوم"],
+    "snacks": ["میان وعده"],
+    "drinks": ["نوشیدنی یا دمنوش مناسب"],
+    "relatedPlants": ["نام گیاهان مرتبط"],
+    "notes": ["توضیحات و هشدارهای عمومی"]
+}}
+
+قوانین:
+- برنامه عمومی باشد و تشخیص یا تجویز پزشکی نده.
+- ادعای درمان بیماری نکن.
+- اگر اطلاعات کاربر برای پیشنهاد خاص کافی نیست، پیشنهاد عمومی بده.
+- حساسیت‌ها و محدودیت‌های غذایی کاربر را رعایت کن.
+- درباره دمنوش‌ها و گیاهان دارویی احتیاط‌های لازم را در notes ذکر کن.
+- در صورت بیماری زمینه‌ای یا مصرف دارو، توصیه به مشورت با پزشک بده.
+- پاسخ فقط JSON معتبر باشد.
+- زبان پاسخ فارسی باشد.
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ],
+        temperature=0.2
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+
+    except json.JSONDecodeError:
+        return {
+            "id": f"plan_{int(__import__('time').time())}",
+            "title": f"برنامه پیشنهادی: {request_data.get('goal', 'تغذیه سالم')}",
+            "breakfast": [],
+            "lunch": [],
+            "dinner": [],
+            "snacks": [],
+            "drinks": [],
+            "relatedPlants": [],
+            "notes": [
+                "در حال حاضر تولید برنامه ساختاریافته با مشکل مواجه شد.",
+                content
+            ]
+        }
