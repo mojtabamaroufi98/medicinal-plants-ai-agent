@@ -734,7 +734,21 @@ def build_plant_profile(plant_result):
 
     try:
         return json.loads(content)
+
     except json.JSONDecodeError:
+
+        try:
+            start = content.find("{")
+            end = content.rfind("}")
+
+            if start != -1 and end != -1:
+                return json.loads(
+                    content[start:end + 1]
+                )
+
+        except json.JSONDecodeError:
+            pass
+
         return None
 
 
