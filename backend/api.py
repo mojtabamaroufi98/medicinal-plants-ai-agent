@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from backend.plant_data import PLANTS
@@ -94,9 +94,10 @@ async def identify_plant_endpoint(
     plant = build_plant_profile(identification)
 
     if plant is None:
-        return {
-            "error": "متأسفانه اطلاعات کافی برای شناسایی گیاه پیدا نشد."
-        }
+        raise HTTPException(
+            status_code=502,
+            detail="متأسفانه اطلاعات کافی برای ساخت پروفایل گیاه دریافت نشد."
+        )
 
     plants = identification.get("plants", [])
 
